@@ -144,7 +144,7 @@ void DumpHex(const void* data, size_t size) {
  * New DNS lookup.
  */
 
-char* dns_lookup(char* hostname, struct sockaddr_in** addr_con, int* family,
+char* dns_lookup(char* hostname, struct sockaddr** addr_con, int* family,
                  socklen_t* addlen) {
     struct addrinfo hints = {0};
     struct addrinfo* res;
@@ -166,7 +166,7 @@ char* dns_lookup(char* hostname, struct sockaddr_in** addr_con, int* family,
     }
 
     *family = res->ai_family;
-    *addr_con = (struct sockaddr_in*)res->ai_addr;
+    *addr_con = (struct sockaddr*)res->ai_addr;
     *addlen = res->ai_addrlen;
 
     char buf[NI_MAXHOST];
@@ -174,7 +174,14 @@ char* dns_lookup(char* hostname, struct sockaddr_in** addr_con, int* family,
     err = getnameinfo((struct sockaddr*)res->ai_addr, len, buf, sizeof(buf), NULL,
                       0, NI_NAMEREQD);
 
-    inet_ntop(res->ai_family, &((*addr_con)->sin_addr), ip, size);
+    switch(*family) {
+        case AF_INET:
+            inet_ntop(res->ai_family, &((*((struct sockaddr_in**)addr_con))->sin_addr), ip, size);
+            break;
+        case AF_INET6:
+            inet_ntop(res->ai_family, &((*((struct sockaddr_in6**)addr_con))->sin6_addr), ip, size);
+            break;
+    }
 
     return ip;
 }
@@ -218,7 +225,7 @@ char* dns_lookup_4(char* hostname, struct sockaddr_in* addr_con) {
  * reverse_dns_lookup performs a Reverse DNS lookup.
  */
 
-char* reverse_dns_lookup(struct sockaddr_in* addr_con, int family) {
+char* reverse_dns_lookup(struct sockaddr* addr_con, int family) {
     socklen_t len;
     char buf[NI_MAXHOST];
 
@@ -229,12 +236,12 @@ char* reverse_dns_lookup(struct sockaddr_in* addr_con, int family) {
     switch(family){
         case AF_INET:
             len = sizeof(struct sockaddr_in);
-            err = getnameinfo((struct sockaddr*)addr_con, len, buf, sizeof(buf),
+            err = getnameinfo(addr_con, len, buf, sizeof(buf),
                               NULL, 0, NI_NAMEREQD);
             break;
         case AF_INET6:
             len = sizeof(struct sockaddr_in6);
-            err = getnameinfo((struct sockaddr*)addr_con, len, buf, sizeof(buf),
+            err = getnameinfo(addr_con, len, buf, sizeof(buf),
                               NULL, 0, NI_NAMEREQD);
             break;
         default:
@@ -246,7 +253,6 @@ char* reverse_dns_lookup(struct sockaddr_in* addr_con, int family) {
         printf("getnameinfo : %s\n", gai_strerror(err));
         return NULL;
     }
-
     int ret_buf_size = strlen(buf) + 1;
     char* ret_buf = malloc(ret_buf_size * sizeof(char));
     safe_strcpy(ret_buf, ret_buf_size, buf);
@@ -282,8 +288,7 @@ void interrupt_ping_loop(int dummy) {
  * statistics such as number of packets send and received, packet loss, and
  * total time.
  */
-void send_ping(int ping_sockfd, struct sockaddr_in* ping_addr,
-               char* rev_host, char* ping_ip, char* ping_dom, int family) {
+void send_ping(int ping_sockfd, char* rev_host, char* ping_ip, char* ping_dom, int family) {
     int ttl_val = TTL_VAL;
     int icmp_count = 0;
     int msg_received_count = 0;
@@ -481,7 +486,7 @@ int main(int argc, char* argv[]) {
     char* ip_addr;
     int family;
     char* reverse_hostname;
-    struct sockaddr_in* addr_con;
+    struct sockaddr* addr_con;
 
     socket_st sock4 = { .fd = -1 };
     socket_st sock6 = { .fd = -1 };
@@ -542,7 +547,7 @@ int main(int argc, char* argv[]) {
 
     signal(SIGINT, interrupt_ping_loop); // Catching interrupts
 
-    send_ping(sock->fd, addr_con, reverse_hostname, ip_addr, argv[1], family);
+    send_ping(sock->fd, reverse_hostname, ip_addr, argv[1], family);
 
     return 0;
 }
