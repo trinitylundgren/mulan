@@ -5,8 +5,8 @@
 #include "utils.h"
 
 /*
- * Truncating version of strcpy that copies the longest prefix of the source
- * string src into a destination buffer of known size.
+ * safe_strcpy is a truncating version of strcpy that copies the longest prefix
+ * of the source string src into a destination buffer of known size.
  *
  * For example:
  *     char* src = "Watermelon";
@@ -17,7 +17,6 @@
  * Prints:
  *     Wate
  */
-
 char* safe_strcpy(char* dest, size_t size, char* src) {
     size_t i = 0;
     if (size > 0) {
@@ -30,8 +29,8 @@ char* safe_strcpy(char* dest, size_t size, char* src) {
 }
 
 /*
- * Function to calculate the checksum. Takes as arguments a void pointer to a
- * data buffer and data buffer length.
+ * checksum is a function to calculate the checksum. Takes as arguments a void
+ * pointer to a data buffer and data buffer length.
  *
  * For example:
  *
@@ -56,4 +55,36 @@ unsigned short checksum(void* b, int len) {
     sum += (sum >> 16);
     result = ~sum;
     return result;
+}
+
+/*
+ * hex_dump is a hexdump function to display raw hex data contents at a pointer.
+ */
+void hex_dump(const void* data, size_t size) {
+	char ascii[17];
+	size_t i, j;
+	ascii[16] = '\0';
+	for (i = 0; i < size; ++i) {
+		printf("%02X ", ((unsigned char*)data)[i]);
+		if (((unsigned char*)data)[i] >= ' ' && ((unsigned char*)data)[i] <= '~') {
+			ascii[i % 16] = ((unsigned char*)data)[i];
+		} else {
+			ascii[i % 16] = '.';
+		}
+		if ((i+1) % 8 == 0 || i+1 == size) {
+			printf(" ");
+			if ((i+1) % 16 == 0) {
+				printf("|  %s \n", ascii);
+			} else if (i+1 == size) {
+				ascii[(i+1) % 16] = '\0';
+				if ((i+1) % 16 <= 8) {
+					printf(" ");
+				}
+				for (j = (i+1) % 16; j < 16; ++j) {
+					printf("   ");
+				}
+				printf("|  %s \n", ascii);
+			}
+		}
+	}
 }

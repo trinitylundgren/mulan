@@ -1,8 +1,25 @@
-/*
- * Description: CLI ping program for Linux.
- * Last Modified: 2020-04-21
- * Author: Trinity Lundgren
- */
+const char* usage_text =
+"$ sudo ./mulan [OPTIONS] destination\n"
+"\n"
+"mulan sends a ping as an ICMP echo request to the specified destination.\n"
+"Destination may be a URL, an IPv4 address or an IPv6 address. Peforms a \n"
+"forward DNS lookup on the hostname and a reverse DNS lookup on the resulting\n"
+"IP address. By default, the protocol used may be either IPv4 or IPv6\n"
+"depending on the first address returned for the hostname. Default behavior\n"
+"is to ping the provided destination in an infinite loop, reporting round\n"
+"trip times (rtt) and any packet loss.\n"
+"\n"
+"OPTIONS:\n"
+"\t-h\t\tShow this message and exit.\n"
+"\t-4\t\tUse IPv4 protocol only.\n"
+"\t-6\t\tUse IPv6 protocol only.\n"
+"\t-c\tCOUNT\tSpecify number of time to ping.\n"
+"\t-t\tTTL\tSpecify time to live for ICMP echo request.\n"
+"\n"
+"The name of this program is a tribute to the Chinese heroine Hua Mulan,\n"
+"whose alias when disguised as a male soldier in the eponymous Disney film is\n"
+"Ping.\n";
+
 
 #include <stdio.h>              // printf
 #include <stdlib.h>             // malloc
@@ -22,7 +39,6 @@
 
 #include "utils.h"              // safe_strcpy
 
-
 #ifndef PORT_NO
 #define PORT_NO 0
 #endif
@@ -31,8 +47,8 @@
 #define PING_PKT_SIZE 64
 #endif
 
-#ifndef TTL_VAL
-#define TTL_VAL 64
+#ifndef DEFAULT_TTL
+#define DEFAULT_TTL 64
 #endif
 
 #ifndef RECV_TIMEOUT
@@ -43,8 +59,6 @@
 #define PING_DELAY 1000000
 #endif
 
-#define getaddrinfo_flags (AI_CANONNAME | AI_IDN | AI_CANONIDN)
-
 /*
  * Global variable governing infinite ping loop in send_ping; may be manipulated
  * by interrupt handler.
@@ -52,12 +66,9 @@
 int continue_ping_loop = 1;
 
 /*
- * struct ping_icmp_packet and struct ping_ip_packet are for use as outgoing
- * and incoming ping packets, respectively. ping_ip_packet contains a
- * ping_icmp_packet struct and adds on an IP header (iphdr) struct to
- * facilitate parsing of received ping packets.
+ * IPv4 packet and header structs
+ *
  */
-
 typedef struct ping_icmp_packet {
     struct icmphdr header;
     char msg[PING_PKT_SIZE - sizeof(struct icmphdr)];
@@ -69,8 +80,20 @@ typedef struct ping_ip_packet {
 }ping_ip_packet;
 
 /*
- * IPv6 structs
+ * IPv6 packet and header structs
+ *
  */
+typedef struct ipv6_hdr {
+    unsigned int
+        version : 4,
+        traffic_class : 8,
+        flow_label : 20;
+    uint16_t length;
+    uint8_t  next_header;
+    uint8_t  hop_limit;
+    struct in6_addr src;
+    struct in6_addr dst;
+}ipv6_hdr;
 
 typedef struct icmp6_hdr {
     uint8_t type;
@@ -85,83 +108,43 @@ typedef struct ping_icmp6_packet {
     char msg[PING_PKT_SIZE - sizeof(struct icmp6_hdr)];
 }ping_icmp6_packet;
 
-typedef struct ipv6_hdr {
-    unsigned int
-        version : 4,
-        traffic_class : 8,
-        flow_label : 20;
-    uint16_t length;
-    uint8_t  next_header;
-    uint8_t  hop_limit;
-    struct in6_addr src;
-    struct in6_addr dst;
-}ipv6_hdr;
-
-
 typedef struct ping_ip6_packet {
     ipv6_hdr ip_header;
     ping_icmp6_packet icmp_pkt;
 }ping_ip6_packet;
 
-/*
- * struct socket_st
- */
 typedef struct socket_st {
     int fd;
     int socktype;
 } socket_st;
 
-void DumpHex(const void* data, size_t size) {
-	char ascii[17];
-	size_t i, j;
-	ascii[16] = '\0';
-	for (i = 0; i < size; ++i) {
-		printf("%02X ", ((unsigned char*)data)[i]);
-		if (((unsigned char*)data)[i] >= ' ' && ((unsigned char*)data)[i] <= '~') {
-			ascii[i % 16] = ((unsigned char*)data)[i];
-		} else {
-			ascii[i % 16] = '.';
-		}
-		if ((i+1) % 8 == 0 || i+1 == size) {
-			printf(" ");
-			if ((i+1) % 16 == 0) {
-				printf("|  %s \n", ascii);
-			} else if (i+1 == size) {
-				ascii[(i+1) % 16] = '\0';
-				if ((i+1) % 16 <= 8) {
-					printf(" ");
-				}
-				for (j = (i+1) % 16; j < 16; ++j) {
-					printf("   ");
-				}
-				printf("|  %s \n", ascii);
-			}
-		}
-	}
-}
-
 /*
- * New DNS lookup.
+ * dns_lookup performs a forward DNS lookup. Take as arguments a hostname, a
+ * double pointer to a sockaddr struct, an int family (AF_INET for IPv4 and
+ * AF_INET6 for IPv6); returns a string IPv4 or IPv6 address and populates the
+ * fields of the passed sockaddr_in or sockaddr_in6 struct.
+ *
+ * For example:
+ *
+ *     struct sockaddr_in addr_con;
+ *     char* ip_addr = dns_lookup_4("www.google.com", &addr_con,
+ *                                  AF_INET, &addlen);
+ *     printf("IP Address: %s", ip_addr);
+ *
+ * Prints:
+ *
+ *     IP Address: 172.217.0.36
  */
-
 char* dns_lookup(char* hostname, struct sockaddr** addr_con, int* family,
-                 socklen_t* addlen) {
-    struct addrinfo hints = {0};
+                 socklen_t* addlen, struct addrinfo* hints) {
     struct addrinfo* res;
     socklen_t size = NI_MAXHOST;
     char* ip = malloc(size*sizeof(char));
     int err;
 
-    // Set hints values
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_DGRAM;
-
-    err = getaddrinfo(hostname, NULL, &hints, &res);
+    err = getaddrinfo(hostname, NULL, hints, &res);
 
     if (err != 0) {
-        perror("getaddrinfo");
-        printf("getaddrinfo %s\n", strerror(errno));
-        printf("getaddrinfo : %s \n", gai_strerror(err));
         return NULL;
     }
 
@@ -171,15 +154,19 @@ char* dns_lookup(char* hostname, struct sockaddr** addr_con, int* family,
 
     char buf[NI_MAXHOST];
     int len = sizeof(struct sockaddr_in6);
-    err = getnameinfo((struct sockaddr*)res->ai_addr, len, buf, sizeof(buf), NULL,
-                      0, NI_NAMEREQD);
+    err = getnameinfo((struct sockaddr*)res->ai_addr, len, buf, sizeof(buf),
+                      NULL, 0, NI_NAMEREQD);
 
     switch(*family) {
         case AF_INET:
-            inet_ntop(res->ai_family, &((*((struct sockaddr_in**)addr_con))->sin_addr), ip, size);
+            inet_ntop(res->ai_family,
+                      &((*((struct sockaddr_in**)addr_con))->sin_addr),
+                      ip, size);
             break;
         case AF_INET6:
-            inet_ntop(res->ai_family, &((*((struct sockaddr_in6**)addr_con))->sin6_addr), ip, size);
+            inet_ntop(res->ai_family,
+                      &((*((struct sockaddr_in6**)addr_con))->sin6_addr),
+                      ip, size);
             break;
     }
 
@@ -187,48 +174,14 @@ char* dns_lookup(char* hostname, struct sockaddr** addr_con, int* family,
 }
 
 /*
- * dns_lookup_4 performs a forward DNS lookup (IPv4). Take as arguments
- * hostname and a pointer to a sockaddr_in struct; returns a string IPv4
- * address in dot-decimal notation and populates the fields of the passed
- * sockaddr_in struct.
- *
- * For example:
- *
- *     struct sockaddr_in addr_con;
- *     char* ip_addr = dns_lookup_4("www.google.com", &addr_con);
- *     printf("IP Address: %s", ip_addr);
- *
- *  Prints:
- *     IP Address: 172.217.0.36
+ * reverse_dns_lookup performs a Reverse DNS lookup. Takes as arguments a
+ * struct sockaddr pointer pointing to a sockaddr_in or sockaddr_in6 struct
+ * populated by getnameinfo in a forward DNS lookup, the corresponding int
+ * family (AF_INET for IPv4 and AF_INET6 for IPv6).
  */
-
-char* dns_lookup_4(char* hostname, struct sockaddr_in* addr_con) {
-    struct hostent* host_entity;
-    char* ip = (char*)malloc(NI_MAXHOST*sizeof(char));
-
-    if ((host_entity = gethostbyname(hostname)) == NULL) {
-        // Cannot find hostname IP address
-        return NULL;
-    }
-
-    // Populate fields of address structure
-    safe_strcpy(ip, NI_MAXHOST*sizeof(char),
-                inet_ntoa(*(struct in_addr*)host_entity->h_addr_list[0]));
-    addr_con->sin_family = host_entity->h_addrtype;
-    addr_con->sin_port = htons(PORT_NO);
-    addr_con->sin_addr.s_addr = *(long*)host_entity->h_addr_list[0];
-
-    return ip;
-}
-
-/*
- * reverse_dns_lookup performs a Reverse DNS lookup.
- */
-
 char* reverse_dns_lookup(struct sockaddr* addr_con, int family) {
     socklen_t len;
     char buf[NI_MAXHOST];
-
 
     // Calculate correct sockaddr size for address family
     int err;
@@ -253,12 +206,12 @@ char* reverse_dns_lookup(struct sockaddr* addr_con, int family) {
         printf("getnameinfo : %s\n", gai_strerror(err));
         return NULL;
     }
+
     int ret_buf_size = strlen(buf) + 1;
     char* ret_buf = malloc(ret_buf_size * sizeof(char));
     safe_strcpy(ret_buf, ret_buf_size, buf);
     return ret_buf;
 }
-
 
 /*
  * Interrupt handling function to allow user to interrupt infinite ping loop
@@ -288,8 +241,9 @@ void interrupt_ping_loop(int dummy) {
  * statistics such as number of packets send and received, packet loss, and
  * total time.
  */
-void send_ping(int ping_sockfd, char* rev_host, char* ping_ip, char* ping_dom, int family) {
-    int ttl_val = TTL_VAL;
+void send_ping(int ping_sockfd, char* rev_host, char* ping_ip, char* ping_dom,
+               int family, uint8_t ttl, uint32_t count, int inf_flag) {
+    int ttl_val = ttl;
     int icmp_count = 0;
     int msg_received_count = 0;
     int i = 0;
@@ -310,19 +264,22 @@ void send_ping(int ping_sockfd, char* rev_host, char* ping_ip, char* ping_dom, i
 
     clock_gettime(CLOCK_MONOTONIC, &tfs);
 
+    // Set TTL value for IPv4 or IPv6
     switch(family) {
         case AF_INET:
-            if (setsockopt(ping_sockfd, SOL_IP, IP_TTL, &ttl_val, sizeof(ttl_val)) != 0) {
+            if (setsockopt(ping_sockfd, SOL_IP, IP_TTL,
+                           &ttl_val, sizeof(ttl_val)) != 0) {
                 printf("Error: setting socket options to TTL failed.\n");
                 return;
             }
             break;
-        //case AF_INET6:
-        //    if (setsockopt(ping_sockfd, IPPROTO_IPV6, IPV6_TCLASS, &ttl_val, sizeof(ttl_val)) != 0) {
-        //        printf("Error: setting socket options to TTL failed.\n");
-        //        return;
-        //    }
-        //    break;
+        case AF_INET6:
+            if (setsockopt(ping_sockfd, IPPROTO_IPV6, IPV6_UNICAST_HOPS,
+                           &ttl_val, sizeof(ttl_val)) != 0) {
+                printf("Error: setting socket options to TTL failed.\n");
+                return;
+            }
+            break;
     }
 
     // Setting timeout of receiving setting
@@ -330,7 +287,7 @@ void send_ping(int ping_sockfd, char* rev_host, char* ping_ip, char* ping_dom, i
                sizeof(tv_out));
 
     // Send ICMP packet in an infinite loop
-    while(continue_ping_loop) {
+    while(continue_ping_loop && count > 0) {
         switch(family) {
             case AF_INET:
                 // Fill the packet
@@ -382,14 +339,14 @@ void send_ping(int ping_sockfd, char* rev_host, char* ping_ip, char* ping_dom, i
                     if (!(incoming.icmp_pkt.header.type == 0 &&
                           incoming.icmp_pkt.header.code == 0)) {
                         printf("Error: packet received with ICMP type %d code %d\n",
-                                incoming.icmp_pkt.header.type,
-                                incoming.icmp_pkt.header.code);
+                               incoming.icmp_pkt.header.type,
+                               incoming.icmp_pkt.header.code);
                     }
                     else {
                         // Parse the packet
                         printf("%d bytes from %s (h: %s) (%s) icmp_seq=%d ttl=%d "
-                                "rtt = %.0Lf ms\n", PING_PKT_SIZE, rev_host, ping_dom,
-                                ping_ip, icmp_count, ttl_val, rtt_msec);
+                               "rtt = %.0Lf ms\n", PING_PKT_SIZE, rev_host, ping_dom,
+                               ping_ip, icmp_count, ttl_val, rtt_msec);
 
                         msg_received_count++;
                     }
@@ -446,14 +403,14 @@ void send_ping(int ping_sockfd, char* rev_host, char* ping_ip, char* ping_dom, i
                     if (!(incoming6.header.type == 129 &&
                           incoming6.header.code == 0)) {
                         printf("Error: packet received with ICMP type %d code %d\n",
-                                incoming6.header.type,
-                                incoming6.header.code);
+                               incoming6.header.type,
+                               incoming6.header.code);
                     }
                     else {
                         // Parse the packet
                         printf("%d bytes from %s (h: %s) (%s) icmp_seq=%d ttl=%d "
-                                "rtt = %.0Lf ms\n", PING_PKT_SIZE, rev_host, ping_dom,
-                                ping_ip, icmp_count, ttl_val, rtt_msec);
+                               "rtt = %.0Lf ms\n", PING_PKT_SIZE, rev_host, ping_dom,
+                               ping_ip, icmp_count, ttl_val, rtt_msec);
 
                         msg_received_count++;
                     }
@@ -461,9 +418,14 @@ void send_ping(int ping_sockfd, char* rev_host, char* ping_ip, char* ping_dom, i
 
                 break;
         }
-
+        // If user provided a finite count, decrement it for each pass of the
+        // outer loop
+        if (!inf_flag) {
+            --count;
+        }
     }
 
+    // Calculate time elapsed during ping operations
     clock_gettime(CLOCK_MONOTONIC, &tfe);
     double time_elapsed = ((double)(tfe.tv_nsec - tfs.tv_nsec)) / 1000000.0;
     total_msec = (tfe.tv_sec - tfs.tv_sec) * 1000.0 + time_elapsed;
@@ -479,29 +441,75 @@ void send_ping(int ping_sockfd, char* rev_host, char* ping_ip, char* ping_dom, i
 /*
  * main is the driver program for ping.
  */
-
 int main(int argc, char* argv[]) {
 
-    //int sockfd;
+    char ch;
     char* ip_addr;
     int family;
     char* reverse_hostname;
     struct sockaddr* addr_con;
+    uint8_t ttl = DEFAULT_TTL;
+    uint32_t count;
+    int inf_flag = 1;
 
     socket_st sock4 = { .fd = -1 };
     socket_st sock6 = { .fd = -1 };
     socket_st* sock;
 
+    struct addrinfo hints = {0};
+    hints.ai_family = AF_UNSPEC;
+
+
+    // Parse command-line flags
+    while((ch = getopt(argc, argv, "h46t:c:")) != EOF) {
+        switch(ch) {
+            case 'h':
+                printf("%s", usage_text);
+                return 0;
+            case '4':
+                if (hints.ai_family == AF_INET6) {
+                    printf("Error: only one -4 or -6 option may be specified\n");
+                    exit(1);
+                }
+                hints.ai_family = AF_INET;
+                break;
+            case '6':
+                if (hints.ai_family == AF_INET) {
+                    printf("Error: only one -4 or -6 option may be specified\n");
+                    exit(1);
+                }
+                hints.ai_family = AF_INET6;
+                break;
+            case 't':
+                if (atoi(optarg) < 1 || atoi(optarg) > 255) {
+                    printf("Error: ttl must be between 1 and 255\n");
+                    exit(1);
+                }
+                ttl = atoi(optarg);
+                break;
+            case 'c':
+                if (atoi(optarg) < 1) {
+                    printf("Error: count must be greater than 1\n");
+                    exit(1);
+                }
+                inf_flag = 0;
+                count = atoi(optarg);
+                break;
+        }
+    }
+
     // If user did not pass in enough arguments
-    if (argc < 2) {
-        printf("Error: invalid command line argument. Format $ %s <address> <flags>\n",
-                argv[0]);
+    if (argc != optind + 1) {
+        printf("Error: invalid command line argument.\n%s",
+                usage_text);
         return 0;
     }
 
+    char* hostname = argv[optind];
+
     // New DNS lookup
     socklen_t connect_len;
-    ip_addr = dns_lookup(argv[1], &addr_con, &family, &connect_len);
+    ip_addr = dns_lookup(hostname, &addr_con, &family, &connect_len, &hints);
     if (ip_addr == NULL) {
         printf("Error: DNS lookup failed. Could not resolve hostname.\n");
         return 0;
@@ -514,7 +522,7 @@ int main(int argc, char* argv[]) {
     int msg_size = PING_PKT_SIZE - sizeof(struct icmphdr);
 
     // Display feedback
-    printf("Trinity's PING %s((%s (%s)) %d data bytes\n", argv[1],
+    printf("Trinity's PING %s((%s (%s)) %d data bytes\n", hostname,
            reverse_hostname, ip_addr, msg_size);
 
     // Open a Raw socket. socket() returns file descriptor or -1 on error.
@@ -530,8 +538,7 @@ int main(int argc, char* argv[]) {
             sock = &sock4;
             break;
         case AF_INET6:
-            //protocol = IPPROTO_IPV6;
-            protocol = 58;
+            protocol = IPPROTO_ICMPV6;
             sock6.fd = socket(family, SOCK_RAW, protocol);
             sock = &sock6;
             break;
@@ -547,7 +554,8 @@ int main(int argc, char* argv[]) {
 
     signal(SIGINT, interrupt_ping_loop); // Catching interrupts
 
-    send_ping(sock->fd, reverse_hostname, ip_addr, argv[1], family);
+    send_ping(sock->fd, reverse_hostname, ip_addr, hostname, family, ttl, count,
+              inf_flag);
 
     return 0;
 }

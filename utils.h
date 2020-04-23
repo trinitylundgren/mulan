@@ -9,5 +9,6 @@
 
 char* safe_strcpy(char*, size_t, char*);
 unsigned short checksum(void*, int);
+void hex_dump(const void*, size_t);
 
 #endif

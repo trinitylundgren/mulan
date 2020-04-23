@@ -1,15 +1,15 @@
 # @file - Makfile
 # @author - Trinity Lundgren <lundgret@oregonstate.edu>
-# @description - Makefile for ping
+# @description - Makefile for mulan, a CLI ping program for Linux.
 
 # Project name
-project = ping
+project = mulan
 
 # Compiler
 CXX = gcc
 
 # Source files
-sources = ping.c utils.c
+sources = mulan.c utils.c
 
 # Create objects from source files
 objects = $(sources:.c=.o)
@@ -43,7 +43,7 @@ $(EXE) : $(objects)
 
 # Create a zip archive of the project files for submission
 zip:
-	zip $(project)_Lundgren_Trinity.zip *.c *.h Makefile *.md
+	zip -r $(project)_Lundgren_Trinity.zip img *.c *.h Makefile *.md
 
 clean:
 	rm -f *.o *.zip $(EXE)
